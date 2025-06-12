@@ -1,0 +1,33 @@
+# 磁盘扩容
+# 登录已关闭虚机的宿主机
+hostname=xxx（替换成实际的主机名）
+# 100G为目前200G扩容到300G的增长量
+qemu-img resize /pitrix/kernels/${hostname}.img +100G
+qemu-nbd -d /dev/nbd0
+qemu-nbd -c /dev/nbd0 /pitrix/kernels/${hostname}.img
+partition_num=$(parted /dev/nbd0 'p' | grep -vE 'EFI|swap' | grep 'ext4' | awk '{print $1}')
+swap_partition_num=$(parted /dev/nbd0 'p' | grep 'swap' | awk '{print $1}')
+umount /dev/nbd0p${partition_num} >/dev/null 2>&1
+umount /dev/nbd0p${swap_partition_num} >/dev/null 2>&1
+parted -s /dev/nbd0 rm ${swap_partition_num}
+# 300G是扩容的目标大小
+parted -s /dev/nbd0 resizepart ${partition_num} 300GB
+parted -s /dev/nbd0 "mkpart primary linux-swap 300GB -1"
+mkswap /dev/nbd0p${swap_partition_num}
+e2fsck -f -y /dev/nbd0p${partition_num}
+resize2fs /dev/nbd0p${partition_num}
+# 修改fstab
+mkdir -p /mnt/${hostname}
+mount /dev/nbd0p${partition_num} /mnt/${hostname}
+# 以下几步可以手动修改/etc/fstab，避免删掉了其他磁盘的信息
+rootid=$(blkid /dev/nbd0p${partition_num} -o value | head -n 1)
+swapid=$(blkid /dev/nbd0p${swap_partition_num} -o value | head -n 1)
+sed -i "/^UUID=/d" /mnt/${hostname}/etc/fstab
+echo "UUID=${rootid} / ext4 errors=remount-ro 0 1" >> /mnt/${hostname}/etc/fstab
+echo "UUID=${swapid} none swap sw 0 0" >> /mnt/${hostname}/etc/fstab
+# 清理操作
+umount /mnt/${hostname}
+rm -rf /mnt/${hostname}
+qemu-nbd -d /dev/nbd0
+# 拉起虚机
+virsh start ${hostname}
